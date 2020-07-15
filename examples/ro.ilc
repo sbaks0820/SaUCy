@@ -1,0 +1,222 @@
+data Msg = Commit Bit | Committed | Open | Opened Bit | Receipt | Failed
+data Msg' = P2RO a | Commit' [Bit] | Open' [Bit]
+data Crupt = CruptP | CruptQ | CruptNone
+data Z2A = A2F a | A2P a | X2Z a
+data A2P = P2Q a | P2F a
+data Bit = Z | S
+
+let xor a b = if a == b then Z else S
+let xors as bs =
+  map (lam x . let (a,b) = x in xor a b) (zip as bs)
+
+letrec splitbits2 bits =
+  match bits with
+  | b1:b2:bs => (match splitbits2 bs with
+                 | (bs1,bs2) => (b1:bs1,b2:bs2))
+  | _        => ([],[])
+
+letrec splitbits3 bits =
+  match bits with
+  | b1:b2:b3:bs => (match splitbits3 bs with
+                 | (bs1,bs2,bs3) => (b1:bs1,b2:bs2,b3:bs3))
+  | _        => ([],[],[])
+
+letrec splitbits4 bits =
+  match bits with
+  | b1:b2:b3:b4:bs => (match splitbits4 bs with
+                    | (bs1,bs2,bs3,bs4) => (b1:bs1,b2:bs2,b3:bs3,b4:bs4))
+  | _              => ([],[],[],[])
+
+letrec splitbits5 bits =
+  match bits with
+  | b1:b2:b3:b4:b5:bs => (match splitbits5 bs with
+                       | (bs1,bs2,bs3,bs4,bs5) => (b1:bs1,b2:bs2,b3:bs3,b4:bs4,b5:bs5))
+  | _                 => ([],[],[],[],[])
+
+letrec isin x assoc =
+  match assoc with
+  | []                     => false
+  | (k,v):rest when x == k => true
+  | _:rest                 => isin x rest
+
+letrec loop f frS = let (!v, frS) = rd frS in f v ; loop f frS
+letrec loop2 table f frS =
+  let (!v, frS) = rd frS in let table = f v table in print "[F_ro] table"; print table; loop2 table f frS
+
+letrec fwd toR frS =
+  let (!msg, frS) = rd frS in print "fwd"; wr msg -> toR; fwd toR frS
+
+letrec cruptfwd toP toF frS =
+  let (!msg, frS) = rd frS in
+    match msg with
+    | P2F m => wr m -> toF; cruptfwd toP toF frS
+    | P2Q m => wr m -> toP; cruptfwd toP toF frS
+
+{-
+   a shared mutable table. ILC doesn't support mutable stores yet
+   so a separate process is needed to implement a shared table
+   where the functionality sends it queries and receives answers
+-}
+let atable k bits rF2T wF2T rT2F wT2F =
+    loop2 [] ( lam x . lam tt . if (isin x tt) then 
+                               print "[F_ro] true";
+                               let h = lookup x tt in
+                                 wr h -> wT2F;
+                                 tt
+                             else
+                               print "[F_ro] false"; print "[F_ro] table"; print tt; 
+                               let (h,bits) = splitAt k bits in
+                                 print "[F_ro] h"; print h; print "[F_ro] bits"; print bits;
+                                 let tt = (x,h) : tt in
+                                   wr h -> wT2F;
+                                   tt ) rF2T
+
+{- 
+    Random Oracle Functionality 
+-}
+let funcro k bits crupt toP toQ toA frP frQ frA = 
+  nu (rF2T, wF2T), (rT2F, wT2F) .
+  let query = lam () . lam fr . lam to .
+    	loop (lam x .
+          wr x -> wF2T;
+          let (!h, rT2F) = rd rT2F in
+            wr h -> to) fr in ()
+      |> atable k bits rF2T wF2T rT2F wT2F
+      |> query () frP toP
+      |> query () frQ toQ
+      |> ()
+
+{-
+  Wrapper for parties
+    let _ = rd frZ in error "Z can't wr to corrupt"; 
+-}
+let corruptOrNot p k bits iscrupt toZ toF toA toQ frZ frF frA frQ = 
+  if iscrupt then ()
+    |> fwd toA frF
+    |> fwd toA frQ
+    |> cruptfwd toQ toF frA
+  else
+    p k bits CruptNone toZ toF toQ frZ frF frQ
+
+{-
+  |> committer 4 rp CruptNone wP2Z wP2F wP2Q rZ2P rF2P rQ2P
+  |> receiver 4 rq CruptNone wQ2Z wQ2F wQ2P rZ2Q rF2Q rP2Q
+-}
+
+
+{-
+  Protocol commitment 
+-}
+let committer k bits crupt toZ toF toQ frZ frF frQ = 
+  let (!(Commit b), frZ) = rd frZ in
+    let (nonce, bits) = splitAt k bits in
+    print "[Sender] sender nonce"; print nonce;
+    wr (P2RO (nonce, b)) -> toF;
+      let (!h, frF) = rd frF in
+        print "[Sender] hello"; print h;
+        wr (Commit' h) -> toQ;
+        let (!Open, frZ) = rd frZ in
+          print "Got open from Z, sending over";
+          print (nonce, b);
+          wr (Open' (nonce,b)) -> toQ; ()
+
+let receiver k bits crupt toZ toF toP frZ frF frP =
+  let (!(Commit' h), frP) = rd frP in
+    print "[Receiver] committed"; print h;
+    wr Committed -> toZ;
+    let (!(Open' m), frP) = rd frP in
+      print "[Receiver] Open at Q"; print m;
+      let (nonce, b) = m in
+        print "rec nonce"; print nonce;
+        wr (P2RO (nonce, b)) -> toF;
+        let (!hh, frF) = rd frF in
+          if (h == hh) then 
+            print "Success";
+            wr (Opened b) -> toZ; ()
+          else
+            print "Failed";
+            wr (Opened b) -> toZ; ()
+
+let exec2 rZ2P wZ2P rP2Z wP2Z rP2F wP2F rF2P wF2P rP2Q wP2Q rZ2Q wZ2Q rQ2Z wQ2Z =
+  wr (Commit 1) -> wZ2P;
+  let (!Committed, rQ2Z) = rd rQ2Z in
+    print "cccccCommitted"; print "";
+    wr Open -> wZ2P;
+      let (!(Opened b), rQ2Z) = rd rQ2Z in
+        print "Opened"; print b; ()
+
+{-let execcrupt k bits rZ2P wZ2P rP2Z wP2Z rP2F wP2F rF2P wF2P rP2Q wP2Q rZ2Q wZ2Q rQ2Z wQ2Z =-}
+let execcrupt k bits crupt toP toQ toA frP frQ frA  =
+  let b = S in
+  let (nonce, bits) = splitAt k bits in
+    wr A2P (P2F (P2RO (nonce,b))) -> toA;
+    let (!(X2Z h), frA) = rd frA in
+      wr A2P (P2Q (Commit' h)) -> toA;
+      let (!Committed, frQ) = rd frQ in
+        wr A2P (P2Q (Open' (nonce,b))) -> toA; ()      
+ 
+let dummyA k bits crupt toZ toF toP toQ frZ frF frP frQ =
+  let fwd2Z = lam () . lam c . loop (lam m . print "toz"; wr (X2Z m) -> toZ) c in
+    loop (lam x . print "trying";  match x with
+      | A2F m => wr m -> toF
+      | A2P m => if crupt == CruptP
+                 then print "corrupt"; print m; wr m -> toP
+                 else print "wrong"; error "can't do that") frZ
+    |> fwd2Z () frF
+    |> fwd2Z () frP
+    |> fwd2Z () frQ
+
+
+let thebits = [Z,S,Z,S,S,Z,S,Z,Z,S,Z,S,Z,S,Z,Z,S,Z,S,Z,Z,S,Z,S,S]
+let maincrupt () =
+  nu (rZ2P,wZ2P), (rP2Z,wP2Z),
+     (rZ2Q,wZ2Q), (rQ2Z,wQ2Z),
+     (rP2F,wP2F), (rF2P,wF2P),
+     (rQ2F,wQ2F), (rF2Q,wF2Q),
+     (rP2Q,wP2Q), (rQ2P,wQ2P),
+     (rF2A,wF2A), (rA2F,wA2F),
+     (rP2A,wP2A), (rA2P,wA2P),
+     (rQ2A,wQ2A), (rA2Q,wA2Q),
+     (rZ2A,wZ2A), (rA2Z,wA2Z),
+     (rtoQasP,wtoQasP), (rtoPasQ,wtoPasQ) . 
+  print "Initialized";
+  let (rz,rp,rq,rf,ra) = splitbits5 thebits in ()
+  |> corruptOrNot committer 4 rp true wP2Z wP2F wP2A wP2Q rZ2P rF2P rA2P rQ2P
+  |> corruptOrNot receiver 4 rq false wQ2Z wQ2F wQ2A wQ2P rZ2Q rF2Q rA2Q rP2Q
+  |> funcro 4 rf CruptP wF2P wF2Q wF2A rP2F rQ2F rA2F
+  |> dummyA 4 ra CruptP wA2Z wA2F wA2P wA2Q rZ2A rF2A rP2A rQ2A
+  |> execcrupt 4 rz CruptP wZ2P wZ2Q wZ2A rP2Z rQ2Z rA2Z
+
+let main2 () =
+  nu (rZ2P,wZ2P), (rP2Z,wP2Z),
+     (rZ2Q,wZ2Q), (rQ2Z,wQ2Z),
+     (rP2F,wP2F), (rF2P,wF2P),
+     (rQ2F,wQ2F), (rF2Q,wF2Q),
+     (rP2Q,wP2Q), (rQ2P,wQ2P),
+     (rF2A,wF2A), (rA2F,wA2F),
+     (rP2A,wP2A), (rA2P,wA2P),
+     (rQ2A,wQ2A), (rA2Q,wA2Q) . 
+  print "Initialized";
+  let (rp,rq,rf) = splitbits3 thebits in ()
+  |> corruptOrNot committer 4 rp false wP2Z wP2F wP2A wP2Q rZ2P rF2P rA2P rQ2P
+  |> corruptOrNot receiver 4 rq false wQ2Z wQ2F wQ2A wQ2P rZ2Q rF2Q rA2Q rP2Q
+  |> funcro 4 rf CruptNone wF2P wF2Q wF2A rP2F rQ2F rA2F
+  |> exec2 rZ2P wZ2P rP2Z wP2Z rP2F wP2F rF2P wF2P rP2Q wP2Q rZ2Q wZ2Q rQ2Z wQ2Z
+
+let exec frP frQ frA toP toQ toA =
+  wr (P2RO 5) -> toP;
+  let (!x, frA) = rd frA in
+    print x;
+    wr (P2RO 5) -> toP;
+    let (!y, frA) = rd frA in
+      print y; ()
+
+let main () =
+  print "start";
+  nu (frP, toP),
+     (frQ, toQ),
+     (frA, toA) . 
+    print "start"
+    |> funcro 3 bits CruptNone toP toQ toA frP frQ frA
+    |> exec frP frQ frA toP toQ toA
+
