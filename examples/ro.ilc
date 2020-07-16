@@ -10,6 +10,7 @@ let xor a b = if a == b then Z else S
 let xors as bs =
   map (lam x . let (a,b) = x in xor a b) (zip as bs)
 
+{- splits a list of bits into 5 equally sized lists of bits -}
 letrec splitbits5 bits =
   match bits with
   | b1:b2:b3:b4:b5:bs => (match splitbits5 bs with
@@ -124,7 +125,8 @@ let receiver k bits crupt toZ toF toP frZ frF frP =
           else
             wr (Opened b) -> toZ; ()
 
-let exec2 k bits toP toQ toA frP frQ frA =
+{- Honest environment -}
+let exechonest k bits toP toQ toA frP frQ frA =
   wr (Commit Z) -> toP;
   let (!Committed, frQ) = rd frQ in
     wr Open -> toP;
@@ -193,25 +195,6 @@ let execcrupt k bits toP toQ toA frP frQ frA  =
 
 
 let thebits = [Z,S,Z,S,S,Z,S,Z,Z,S,Z,S,Z,S,Z,Z,S,Z,S,Z,Z,S,Z,S,S]
-let maincrupt () =
-  nu (rZ2P,wZ2P), (rP2Z,wP2Z),
-     (rZ2Q,wZ2Q), (rQ2Z,wQ2Z),
-     (rP2F,wP2F), (rF2P,wF2P),
-     (rQ2F,wQ2F), (rF2Q,wF2Q),
-     (rP2Q,wP2Q), (rQ2P,wQ2P),
-     (rF2A,wF2A), (rA2F,wA2F),
-     (rP2A,wP2A), (rA2P,wA2P),
-     (rQ2A,wQ2A), (rA2Q,wA2Q),
-     (rZ2A,wZ2A), (rA2Z,wA2Z),
-     (rtoQasP,wtoQasP), (rtoPasQ,wtoPasQ) . 
-  print "Initialized";
-  let (rz,rp,rq,rf,ra) = splitbits5 thebits in ()
-  |> corruptOrNot committer 4 rp false wP2Z wP2F wP2A wP2Q rZ2P rF2P rA2P rQ2P
-  |> corruptOrNot receiver 4 rq false wQ2Z wQ2F wQ2A wQ2P rZ2Q rF2Q rA2Q rP2Q
-  |> funcro 4 rf CruptNone wF2P wF2Q wF2A rP2F rQ2F rA2F
-  |> dummyA 4 ra CruptNone wA2Z wA2F wA2P wA2Q rZ2A rF2A rP2A rQ2A
-  |> exec2 4 rz wZ2P wZ2Q wZ2A rP2Z rQ2Z rA2Z
-
 
 let execUC z p q f a crupt k r =
   nu (rZ2P, wZ2P), (rP2Z, wP2Z),
@@ -230,9 +213,11 @@ let execUC z p q f a crupt k r =
      |> corruptOrNot q k rq (crupt==CruptQ) wQ2Z wQ2F wQ2A wQ2P rZ2Q rF2Q rA2Q rP2Q
      |> z k rz wZ2P wZ2Q wZ2A rP2Z rQ2Z rA2Z
 
+{- call main1 to run the ideal world -}
 let main1 () =
   execUC (execcrupt) (idealparty) (idealparty) (fCom) (simCom) (CruptP) 4 thebits
 
+{- call main2 to run the real world -}
 let main2 () =
   execUC (execcrupt) (committer) (receiver) (funcro) (dummyA) (CruptP) 4 thebits
 
